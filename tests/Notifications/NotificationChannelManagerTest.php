@@ -26,9 +26,9 @@ class NotificationChannelManagerTest extends TestCase
 {
     protected function tearDown(): void
     {
-        m::close();
-
         Container::setInstance(null);
+
+        parent::tearDown();
     }
 
     public function testNotificationCanBeDispatchedToDriver()
@@ -146,6 +146,49 @@ class NotificationChannelManagerTest extends TestCase
         });
         $events->shouldReceive('dispatch')->never()->with(m::type(NotificationSent::class));
 
+        $manager->send(new NotificationChannelManagerTestNotifiable, new NotificationChannelManagerTestNotification);
+    }
+
+    public function testNotificationFailedDispatchedOnlyOnceWhenMultipleFailed()
+    {
+        $this->expectException(Exception::class);
+
+        $container = new Container;
+        $container->instance('config', ['app.name' => 'Name', 'app.logo' => 'Logo']);
+        $container->instance(Bus::class, $bus = m::mock());
+        $container->instance(Dispatcher::class, $events = m::mock(Dispatcher::class));
+        Container::setInstance($container);
+        $manager = $container->make(ChannelManager::class, ['container' => $container]);
+        $manager->extend('test', function () use ($events) {
+            return new class($events) {
+                private $count = 0;
+
+                public function __construct(private $events) {}
+
+                public function send($notifiable, Notification $notification)
+                {
+                    if ($this->count > 1) {
+                        throw new \Exception();
+                    }
+
+                    $this->count++;
+                }
+            };
+        });
+        $listeners = new Collection();
+        $events->shouldReceive('until')->with(m::type(NotificationSending::class))->andReturn(true);
+        $events->shouldReceive('listen')->once()->andReturnUsing(function ($event, $callback) use ($listeners) {
+            $listeners->push($callback);
+        });
+        $events->shouldReceive('dispatch')->once()->with(m::type(NotificationFailed::class))->andReturnUsing(function ($event) use ($listeners) {
+            foreach ($listeners as $listener) {
+                $listener($event);
+            }
+        });
+        $events->shouldReceive('dispatch')->twice()->with(m::type(NotificationSent::class));
+
+        $manager->send(new NotificationChannelManagerTestNotifiable, new NotificationChannelManagerTestNotification);
+        $manager->send(new NotificationChannelManagerTestNotifiable, new NotificationChannelManagerTestNotification);
         $manager->send(new NotificationChannelManagerTestNotifiable, new NotificationChannelManagerTestNotification);
     }
 
